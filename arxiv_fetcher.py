@@ -1,34 +1,67 @@
-import arxiv, os, time, hashlib, json
+import arxiv
+import os
+import time
+import hashlib
+import json
+import random
 from datetime import datetime
-from tqdm import tqdm
+
+from domain_registry import DOMAINS
+
+# =========================
+# Configuration
+# =========================
 
 DATA_DIR = "/media/avaish/aiwork/local_llm/data/research"
 CACHE_FILE = os.path.join(DATA_DIR, "arxiv_cache.json")
 
-# 🔍 Define your research topics of interest
-SEARCH_TOPICS = [
-    "satellite image change detection",
-    "visual search in satellite imagery",
-    "semantic segmentation transformer",
-    "DINOv2 SAM2 multimodal foundation models",
-    "YOLO object detection evolution",
-    "AI compiler optimization Triton kernel",
-    "GPU performance profiling Nsight Compute",
-    "NVIDIA GPU architecture Hopper Blackwell Tensor Core",
-    "agentic GPU optimization AI workloads",
-    "science AI for HPC and simulation",
-    "TPU , JAX and Pallas Kernels",
-    "AI Frameworks like Pytorch, Tensorflow",
-    "AI Agentic systems like MCP , Langgraph, Langchain , LlamaIndex",
-    "HSM , Cryptography and AI Security"
-]
+# Polite crawling parameters (arXiv-friendly)
+ARXIV_REQUEST_DELAY = 4.0  # seconds between queries
+ARXIV_BACKOFF_DELAY = 10.0  # seconds on failure
+MAX_RESULTS_PER_QUERY = 10
+
+# =========================
+# Build search topics from domain registry
+# =========================
+
+SEARCH_TOPICS = sorted({
+    topic
+    for cfg in DOMAINS.values()
+    for topic in cfg.get("arxiv_topics", [])
+})
 
 
-def md5(s: str):
-    return hashlib.md5(s.encode()).hexdigest()
+# =========================
+# Helpers
+# =========================
+
+def normalize_arxiv_query(q: str) -> str:
+    """
+    Convert verbose natural-language queries into arXiv-friendly keyword queries.
+    arXiv prefers short academic keyword expressions.
+    """
+    q = q.lower()
+
+    # Remove filler words
+    for junk in ["like", "systems", "and", ","]:
+        q = q.replace(junk, "")
+
+    # Canonical keyword whitelist
+    keywords = [
+        "cuda", "gpu", "triton", "nsight",
+        "transformer", "vision", "segmentation",
+        "satellite", "geospatial",
+        "yolo", "foundation model",
+        "agentic", "langchain", "langgraph",
+        "cryptography", "hsm", "security",
+        "jax", "pytorch", "tensorflow", "tunix"
+    ]
+
+    cleaned = [k for k in keywords if k in q]
+    return " ".join(cleaned) if cleaned else q.strip()
 
 
-def load_cache():
+def load_cache() -> dict:
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, "r") as f:
@@ -38,77 +71,101 @@ def load_cache():
     return {}
 
 
-def save_cache(cache):
+def save_cache(cache: dict):
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
 
 
 def already_downloaded(paper_id: str, updated: str, cache: dict) -> bool:
-    """Return True if this arXiv paper (same ID and version) already downloaded."""
+    """
+    Return True if this arXiv paper (same ID and version timestamp) already exists.
+    """
     info = cache.get(paper_id)
-    if not info:
-        return False
-    # arXiv paper URLs include version (v1, v2...), so detect change
-    if info.get("updated") == updated:
-        return True
-    return False
+    return info is not None and info.get("updated") == updated
 
+
+# =========================
+# Main fetch logic
+# =========================
 
 def fetch_new_papers():
-    """Fetch the latest relevant arXiv papers (avoiding duplicates)."""
+    """
+    Fetch new arXiv papers across all configured domains.
+    This function is resilient to arXiv outages and rate limits.
+    """
     os.makedirs(DATA_DIR, exist_ok=True)
     cache = load_cache()
     new_papers = []
 
     for topic in SEARCH_TOPICS:
-        print(f"\n🔍 Searching arXiv for: {topic}")
-        search = arxiv.Search(
-            query=topic,
-            max_results=10,
-            sort_by=arxiv.SortCriterion.SubmittedDate,
-        )
+        query = normalize_arxiv_query(topic)
+        print(f"🔍 Searching arXiv for: {query}")
 
-        for result in search.results():
-            paper_id = result.entry_id.split("/")[-1]  # e.g., "2407.12345v2"
-            title = result.title.strip()
-            updated = getattr(result, "updated", result.published).isoformat()
+        try:
+            search = arxiv.Search(
+                query=query,
+                max_results=MAX_RESULTS_PER_QUERY,
+                sort_by=arxiv.SortCriterion.SubmittedDate,
+            )
 
-            if already_downloaded(paper_id, updated, cache):
-                print(f"⏭️ Skipping (cached): {title[:60]}...")
-                continue
+            for result in search.results():
+                paper_id = result.entry_id.split("/")[-1]
+                title = result.title.strip()
+                updated = getattr(result, "updated", result.published).isoformat()
 
-            safe_title = "".join(c if c.isalnum() or c in " _-" else "_" for c in title)[:80]
-            pdf_filename = f"{paper_id}-{safe_title}.pdf"
-            pdf_path = os.path.join(DATA_DIR, pdf_filename)
+                if already_downloaded(paper_id, updated, cache):
+                    continue
 
-            try:
-                print(f"  📥 Downloading: {title[:80]}...")
-                result.download_pdf(filename=pdf_path)
+                safe_title = "".join(
+                    c if c.isalnum() or c in " _-" else "_"
+                    for c in title
+                )[:80]
 
-                cache[paper_id] = {
-                    "title": title,
-                    "summary": result.summary[:400],
-                    "authors": [a.name for a in result.authors],
-                    "pdf": pdf_path,
-                    "updated": updated,
-                    "fetched": datetime.now().isoformat()
-                }
-                new_papers.append(cache[paper_id])
-                save_cache(cache)
-                time.sleep(1.5)
-            except Exception as e:
-                print(f"  ⚠️ Failed {title[:60]}: {e}")
+                pdf_filename = f"{paper_id}-{safe_title}.pdf"
+                pdf_path = os.path.join(DATA_DIR, pdf_filename)
+
+                try:
+                    print(f"  📥 Downloading: {title[:80]}...")
+                    result.download_pdf(filename=pdf_path)
+
+                    cache[paper_id] = {
+                        "title": title,
+                        "summary": result.summary[:500],
+                        "authors": [a.name for a in result.authors],
+                        "pdf": pdf_path,
+                        "updated": updated,
+                        "fetched": datetime.now().isoformat(),
+                    }
+
+                    new_papers.append(cache[paper_id])
+                    save_cache(cache)
+
+                except Exception as e:
+                    print(f"  ⚠️ PDF download failed: {title[:60]} | {e}")
+
+            # Polite delay with jitter
+            time.sleep(ARXIV_REQUEST_DELAY + random.uniform(0.5, 1.5))
+
+        except Exception as e:
+            # arXiv 429 / 503 / network failures
+            print(f"⚠️ arXiv query failed for '{query}': {e}")
+            print(f"⏳ Backing off for {ARXIV_BACKOFF_DELAY} seconds...")
+            time.sleep(ARXIV_BACKOFF_DELAY)
 
     save_cache(cache)
     print(f"\n✅ {len(new_papers)} new papers added.")
     return new_papers
 
 
+# =========================
+# Standalone execution
+# =========================
+
 if __name__ == "__main__":
-    new_papers = fetch_new_papers()
-    if new_papers:
+    papers = fetch_new_papers()
+    if papers:
         print("\n🧩 Summary of new downloads:")
-        for p in new_papers:
+        for p in papers:
             print(f"- {p['title']} ({', '.join(p['authors'][:3])})")
             print(f"  ↳ {p['pdf']}\n")
     else:

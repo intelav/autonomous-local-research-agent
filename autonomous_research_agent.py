@@ -6,6 +6,7 @@ from agent_local_rag import get_vector_db
 from langchain_community.llms import Ollama
 from langchain.chains import RetrievalQA
 from arxiv_fetcher import fetch_new_papers
+from domain_registry import DOMAINS, DEFAULT_DOMAIN
 from vector_manager import build_or_update_vector_db
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
@@ -18,6 +19,41 @@ os.makedirs(RUNS_DIR, exist_ok=True)
 DOMAIN = "research"
 REFRESH_INTERVAL = 30  # min
 WRAP_WIDTH = 100
+
+DOMAIN_CODE_STYLE = {
+    "gpu_optimization": {
+        "language": "CUDA / Triton and C++",
+        "focus": "GPU kernel optimization or profiling"
+    },
+    "foundation_models": {
+        "language": "Python (PyTorch)",
+        "focus": "model architecture or inference"
+    },
+    "geospatial_ai": {
+        "language": "Python",
+        "focus": "satellite image processing or change detection"
+    },
+    "vision_models": {
+        "language": "Python (PyTorch)",
+        "focus": "object detection or segmentation"
+    },
+    "ai_frameworks": {
+        "language": "Python",
+        "focus": "framework feature or performance"
+    },
+    "agentic_ai": {
+        "language": "Python",
+        "focus": "LangChain / MCP agent workflow"
+    },
+    "security_crypto": {
+        "language": "Python or C or C++",
+        "focus": "cryptography or HSM usage"
+    },
+    DEFAULT_DOMAIN: {
+        "language": "C++",
+        "focus": "core concept demonstration"
+    }
+}
 
 
 def format_answer(ans: str) -> str:
@@ -64,20 +100,15 @@ def format_answer(ans: str) -> str:
 
 
 def classify_domain(query: str):
-    """Assign a domain tag based on keywords in the query."""
-    tags = []
+    """Assign domain tags based on centralized domain registry."""
     q = query.lower()
-    if any(k in q for k in ["cuda", "gpu", "triton", "kernel", "nsight"]):
-        tags.append("gpu_optimization")
-    if any(k in q for k in ["segmentation", "mask", "sam", "dinov2", "vit", "transformer", "convolution"]):
-        tags.append("foundation_models")
-    if any(k in q for k in ["satellite", "geospatial", "remote", "visual search", "change detection"]):
-        tags.append("geospatial_ai")
-    if any(k in q for k in ["agentic", "autonomous", "optimization", "profiling"]):
-        tags.append("agentic_gpu")
-    if not tags:
-        tags.append("general")
-    return tags
+    tags = []
+
+    for domain, cfg in DOMAINS.items():
+        if any(k in q for k in cfg["keywords"]):
+            tags.append(domain)
+
+    return tags or [DEFAULT_DOMAIN]
 
 
 def enhance_paragraphs(chunks, llm):
@@ -107,10 +138,14 @@ def show_top_hits(query, vectordb, run_dir, llm=None):
 
     context_dir = os.path.join(run_dir, "contexts")
     os.makedirs(context_dir, exist_ok=True)
-    tag = classify_domain(query)
+    tags = classify_domain(query)
     #safe_tag = tag.replace(" ", "_")
 
-    ctx_file = os.path.join(context_dir, f"context_{tag}_{datetime.now().strftime('%H%M%S')}.md")
+    safe_tag = "_".join(tags)
+    ctx_file = os.path.join(
+        context_dir,
+        f"context_{safe_tag}_{datetime.now().strftime('%H%M%S')}.md"
+    )
     with open(ctx_file, "w") as cf:
         cf.write("# Retrieved Contexts\n\n")
         for i, (_, score, src, snippet) in enumerate(rows, 1):
@@ -121,18 +156,8 @@ def show_top_hits(query, vectordb, run_dir, llm=None):
         print(textwrap.fill(enriched, width=100))
 
 
-domain_expertise = [
-    "CUDA Programming and Custom kernels including Triton Kernels",
-    "Object Detection and Segmentation, Vision Transformer",
-    "AI frameworks like Pytorch, JAX, Tensorflow and their important features and latest advancements",
-    "Foundation models(Transformer, DINOv2, SAM2, Whisper, LLAMA)",
-    "GPU compiler and profiling techniques",
-    "Data science using numpy and panda",
-    "Latest in YOLO, Its performance and Loss Function",
-    "machine learning to use various algorithm like SVM, naive bayes classifier, random forest, XGBoost",
-    "Deep learning, CNN , RNN, LSTM, Reinforcement learning , GAN",
-    "AI Agentic systems like MCP , Langgraph, Langchain , LlamaIndex",
-    "HSM , Cryptography and AI Security"
+DOMAIN_DESCRIPTIONS = [
+    cfg["description"] for cfg in DOMAINS.values()
 ]
 
 
@@ -147,7 +172,7 @@ def load_dynamic_queries():
     #     "Fundamentals of Convolution and Segmentation Network "
     #
     # ]
-    base_queries = domain_expertise
+    base_queries = DOMAIN_DESCRIPTIONS
     log_file = "user_queries.log"
     user_queries = []
     if os.path.exists(log_file):
@@ -168,54 +193,119 @@ def load_dynamic_queries():
     return base_queries + user_queries + ai_focus
 
 
-def generate_domain_queries(seed_queries, query_dir, n=6):
-    """Use LLM to generate new research queries dynamically."""
-    try:
-        llm = Ollama(model="llama3:8b-instruct-q4_K_M", base_url="http://localhost:11434")
-    except Exception as e:
-        print(f"⚠️ LLM initialization failed: {e}")
-        return
+def generate_domain_queries(
+        vectordb,
+        llm,
+        domain: str,
+        num_queries: int = 5,
+):
+    """
+    Generate domain-specific research queries using RAG context
+    from existing PDFs.
+    """
 
-    prompt = f"""
-    You are an autonomous research assistant .
-    Your mission: propose new research queries that will help deepen knowledge and make me expert in:
-    {domain_expertise} 
+    # ---- 1. Retrieve domain-grounded context ----
+    retriever = vectordb.as_retriever(
+        search_kwargs={"k": 6}
+    )
 
-    Consider the following recent questions:
-    {seed_queries}
+    retrieval_prompt = (
+        f"Recent research and methods in {domain.replace('_', ' ')}"
+    )
 
-    Generate {n} *new* and *technically rich* questions, phrased naturally,without adding commentary or explanations 
-    suitable for querying arXiv , NVIDIA developer , data science , machine learning , deep learning , python , 
-    numpy, panda, scikit-learn  blogs. Avoid duplication, stay domain-relevant, and focus on "how" or "why" style 
-    questions."""
+    docs = retriever.get_relevant_documents(retrieval_prompt)
 
-    try:
-        response = llm(prompt)
-        raw_lines = response.splitlines()
-        clean_queries = []
-        for line in raw_lines:
-            line = line.strip()
-            if not line:
-                continue
-            # keep only actual questions (start with number/bullet/** and end with '?')
-            if "?" in line and not line.lower().startswith(
-                    ("this question", "it explores", "the study", "this research")):
-                # remove leading numbering or markdown artifacts
-                q = re.sub(r"^[\d\.\*\-\s]+", "", line).strip()
-                clean_queries.append(q)
-
-        # deduplicate and log
-        new_queries = list(dict.fromkeys(clean_queries))
-        #new_queries = [q.strip("•- \n") for q in response.split("\n") if len(q.strip()) > 15]
-        print(f"\n🧠 Generated {len(new_queries)} domain-specific queries from LLM.")
-        with open(query_dir, "a") as f:
-            for q in new_queries:
-                f.write(f"{datetime.now().isoformat()} | {q}\n")
-        return new_queries[:n]
-
-    except Exception as e:
-        print(f"⚠️ LLM query generation failed: {e}")
+    if not docs:
         return []
+
+    context_text = "\n\n".join(
+        d.page_content[:800] for d in docs
+    )
+
+    domain_meta = DOMAINS[domain]
+
+    # ---- 2. RAG-grounded query generation ----
+    prompt = f"""
+You are an autonomous research agent.
+
+Domain: {domain}
+Description: {domain_meta.get("description", "")}
+
+Below is context from recent papers already in the knowledge base:
+
+----------------
+{context_text}
+----------------
+
+Your task:
+1. Do NOT repeat existing topics verbatim
+2. Identify gaps, extensions, or unanswered questions
+3. Generate {num_queries} concise, research-grade queries
+4. Queries must be specific and actionable
+5. Queries must strictly belong to this domain
+
+Return only a numbered list of queries.
+"""
+
+    response = llm.invoke(prompt)
+
+    queries = []
+    for line in response.splitlines():
+        line = line.strip()
+        if line and line[0].isdigit():
+            queries.append(line.split(".", 1)[1].strip())
+
+    return queries
+
+
+# def generate_domain_queries(seed_queries, query_dir, n=6):
+#     """Use LLM to generate new research queries dynamically."""
+#     try:
+#         llm = Ollama(model="llama3:8b-instruct-q4_K_M", base_url="http://localhost:11434")
+#     except Exception as e:
+#         print(f"⚠️ LLM initialization failed: {e}")
+#         return
+#
+#     prompt = f"""
+#     You are an autonomous research assistant .
+#     Your mission: propose new research queries that will help deepen knowledge and make me expert in:
+#     {DOMAIN_DESCRIPTIONS}
+#
+#     Consider the following recent questions:
+#     {seed_queries}
+#
+#     Generate {n} *new* and *technically rich* questions, phrased naturally,without adding commentary or explanations
+#     suitable for querying arXiv , NVIDIA developer , data science , machine learning , deep learning , python ,
+#     numpy, panda, scikit-learn  blogs. Avoid duplication, stay domain-relevant, and focus on "how" or "why" style
+#     questions."""
+#
+#     try:
+#         response = llm(prompt)
+#         raw_lines = response.splitlines()
+#         clean_queries = []
+#         for line in raw_lines:
+#             line = line.strip()
+#             if not line:
+#                 continue
+#             # keep only actual questions (start with number/bullet/** and end with '?')
+#             if "?" in line and not line.lower().startswith(
+#                     ("this question", "it explores", "the study", "this research")):
+#                 # remove leading numbering or markdown artifacts
+#                 q = re.sub(r"^[\d\.\*\-\s]+", "", line).strip()
+#                 clean_queries.append(q)
+#
+#         # deduplicate and log
+#         new_queries = list(dict.fromkeys(clean_queries))
+#         #new_queries = [q.strip("•- \n") for q in response.split("\n") if len(q.strip()) > 15]
+#         print(f"\n🧠 Generated {len(new_queries)} domain-specific queries from LLM.")
+#         with open(query_dir, "a") as f:
+#             for q in new_queries:
+#                 f.write(f"{datetime.now().isoformat()} | {q}\n")
+#         return new_queries[:n]
+
+# except Exception as e:
+#     print(f"⚠️ LLM query generation failed: {e}")
+#     return []
 
 
 def determine_lang(code):
@@ -224,6 +314,8 @@ def determine_lang(code):
     if "#include" in code:
         return "cpp"
     if "def " in code or "import " in code:
+        return "python"
+    if "triton" in code.lower():
         return "python"
     return ""
 
@@ -257,35 +349,59 @@ def run_autonomous_cycle():
         return
     qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
 
-    # 3️⃣ Prepare dynamic queries
-    base_queries = load_dynamic_queries()
-    random.shuffle(base_queries)
+    # # 3️⃣ Prepare dynamic queries
+    # base_queries = load_dynamic_queries()
+    # random.shuffle(base_queries)
+    #
+    # # pick a random subset each run
+    # num_to_select = random.randint(5, 12)  # choose 5–12 random queries each cycle
+    # selected_queries = base_queries[:num_to_select]
+    #
+    # # add a few generated ones too, for freshness
+    # generated_queries = generate_domain_queries(random.sample(base_queries, min(10, len(base_queries))), GEN_QUERY_LOG)
+    # # combine and deduplicate
+    # queries = list(dict.fromkeys(selected_queries + generated_queries))
+    # print(f"🧩 Selected {len(queries)} queries for this cycle (randomized subset).")
 
-    # pick a random subset each run
-    num_to_select = random.randint(5, 12)  # choose 5–12 random queries each cycle
-    selected_queries = base_queries[:num_to_select]
+    all_queries = []
 
-    # add a few generated ones too, for freshness
-    generated_queries = generate_domain_queries(random.sample(base_queries, min(10, len(base_queries))), GEN_QUERY_LOG)
-    # combine and deduplicate
-    queries = list(dict.fromkeys(selected_queries + generated_queries))
-    print(f"🧩 Selected {len(queries)} queries for this cycle (randomized subset).")
+    for domain, cfg in DOMAINS.items():
+        try:
+            domain_queries = generate_domain_queries(
+                vectordb=vectordb,
+                llm=llm,
+                domain=domain,
+                num_queries=5,
+            )
+            all_queries.extend(
+                [{"query": q, "domain": domain} for q in domain_queries]
+            )
+        except Exception as e:
+            print(f"⚠️ Query generation failed for {domain}: {e}")
 
     with open(QUERY_LOG, "a") as f:
-        f.write(f"number of queries : {len(queries)}")
-        for q in queries:
-            f.write(f"{datetime.now().isoformat()} | {q}\n")
+        f.write(f"number of queries : {len(all_queries)}")
+        for item in all_queries:
+            f.write(
+                f"{datetime.now().isoformat()} | "
+                f"[{item['domain']}] {item['query']}\n"
+            )
 
     findings = {}
-    for q in queries:
-        tags = classify_domain(q)
-        print(f"\n❓ [{', '.join(tags)}] {q}")
-
+    for item in all_queries:
+        q = item["query"]
+        inferred_tags = classify_domain(q)
+        declared_domain = item["domain"]
+        # print(f"\n❓ [{', '.join(tags)}] {q}")
+        if declared_domain not in inferred_tags:
+            print(f"⚠️ Domain mismatch: {q} inferred as {inferred_tags}")
+        tags = [declared_domain]
+        print(f"\n❓ [{declared_domain}] {q}")
         context_docs = retriever.get_relevant_documents(q)
         context_text = "\n\n".join([d.page_content for d in context_docs[:5]])
 
         enhanced_prompt = f"""
-        You are an expert in GPU systems, compiler optimization, and AI model acceleration.
+        You are an expert in GPU systems, compiler optimization,  AI model acceleration and AI Security including HSM and Modern Cryptography .
 
         Context from research documents:
         {context_text}
@@ -321,25 +437,39 @@ def run_autonomous_cycle():
             wrapped = "\n".join(textwrap.wrap(ans, width=WRAP_WIDTH))
 
             print(f"\n🤖 {wrapped}\n")
-            for tag in tags:
-                findings.setdefault(tag, []).append(f"{q} → {ans}")
+            # for tag in tags:
+            #     findings.setdefault(tag, []).append({
+            #         "query": q,
+            #         "answer": ans,
+            #         "code": None
+            #     })
         except Exception as e:
             print(f"⚠️ Error on '{q}': {e}")
 
+        entry = {
+            "query": q,
+            "answer": ans,
+            "code": None
+        }
+
+        findings.setdefault(declared_domain, []).append(entry)
+
+        style = DOMAIN_CODE_STYLE.get(declared_domain, DOMAIN_CODE_STYLE[DEFAULT_DOMAIN])
+
+        code_prompt = f"""
+        Write a concise, well-commented example in {style["language"]} that demonstrates:
+        {style["focus"]}
+
+        Context:
+        {ans}
+
+        Keep it under 40 lines.
+        """
+
         try:
-            code_prompt = f"""
-            Write a concise, well-commented example program in {random.choice(["Python", "C++", "CUDA PTX"])}
-            that demonstrates the core concept discussed in the following answer:
-
-            ---
-            {ans}
-            ---
-
-            Focus on clarity and brevity (under 40 lines). Include inline comments to explain key steps.
-            """
-            code_example = llm.invoke(code_prompt)
+            entry["code"] = llm.invoke(code_prompt)
         except Exception as e:
-            code_example = f"[Code example unavailable: {e}]"
+            entry["code"] = f"[Code example unavailable: {e}]"
 
     # 4️⃣ Write summaries
     for tag, items in findings.items():
@@ -348,11 +478,14 @@ def run_autonomous_cycle():
         print(f"\n🧩 Writing digests for tag: {tag}")
 
         for item in items:
-            query_part, answer_part = item.split("→", 1) if "→" in item else (item, "")
+            query_part = item["query"]
+            answer_part = item["answer"]
+            code_example = item["code"] or "_No code example generated._"
             safe_query = "_".join(query_part.strip()[:80].split())
+            slug = re.sub(r"[^a-zA-Z0-9]+", "_", query_part.lower())[:50]
             filename = os.path.join(
                 folder,
-                f"digest_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+                f"digest_{slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
             )
 
             # 🔍 Try to get top hits (retrieved context paragraphs)
@@ -394,8 +527,9 @@ def run_autonomous_cycle():
     with open(os.path.join(run_dir, "global_digest_index.md"), "a") as index:
         for tag, items in findings.items():
             for item in items:
-                query = item.split("→", 1)[0].strip()
-                index.write(f"- [{query}](./digests/{tag}/digest_{'_'.join(query[:80].split())}.md)\n")
+                query = item["query"]
+                filename = f"digest_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+                index.write(f"- [{query}](./digests/{tag}/{filename})\n")
     print("⏳ Sleeping until next research cycle...\n")
 
 
