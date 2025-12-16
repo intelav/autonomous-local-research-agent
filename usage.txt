@@ -1,0 +1,3 @@
+python run_agent.py --domain research
+python run_agent.py --domain education
+python run_agent.py --domain recipes

@@ -1,0 +1,48 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# =========================
+# Virtual environments
+# =========================
+envs/
+venv/
+.venv/
+
+# =========================
+# RAG / LangChain artifacts
+# =========================
+vector_db/
+runs/
+data/
+
+# =========================
+# Ollama / Models / Binaries
+# =========================
+ollama_data/
+ollama_models/
+models/
+ollama-linux-amd64.tgz
+
+# =========================
+# System / IDE
+# =========================
+.DS_Store
+.idea/
+.vscode/
+
+# =========================
+# OS / build artifacts
+# =========================
+bin/
+lib/
+
+# =========================
+# Logs
+# =========================
+*.log
+Papers/
