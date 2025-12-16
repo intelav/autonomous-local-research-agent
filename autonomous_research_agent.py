@@ -131,7 +131,8 @@ domain_expertise = [
     "Latest in YOLO, Its performance and Loss Function",
     "machine learning to use various algorithm like SVM, naive bayes classifier, random forest, XGBoost",
     "Deep learning, CNN , RNN, LSTM, Reinforcement learning , GAN",
-    "AI Agentic systems like MCP , Langgraph, Langchain , LlamaIndex"
+    "AI Agentic systems like MCP , Langgraph, Langchain , LlamaIndex",
+    "HSM , Cryptography and AI Security"
 ]
 
 
@@ -162,6 +163,7 @@ def load_dynamic_queries():
         "New Triton compiler optimization techniques for AI inference",
         "Advances in agentic GPU systems or autonomous GPU tuning",
         "New multimodal or geospatial foundation models like SAM2, DINOv2, and Contrastive Models",
+        "AI with Security"
     ]
     return base_queries + user_queries + ai_focus
 
