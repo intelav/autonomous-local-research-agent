@@ -18,7 +18,9 @@ SEARCH_TOPICS = [
     "agentic GPU optimization AI workloads",
     "science AI for HPC and simulation",
     "TPU , JAX and Pallas Kernels",
-    "AI Frameworks like Pytorch, Tensorflow"
+    "AI Frameworks like Pytorch, Tensorflow",
+    "AI Agentic systems like MCP , Langgraph, Langchain , LlamaIndex",
+    "HSM , Cryptography and AI Security"
 ]
 
 
