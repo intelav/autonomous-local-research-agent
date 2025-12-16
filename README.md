@@ -25,3 +25,7 @@ An autonomous, fully local research agent that:
 pip install -r requirements.txt
 ollama pull llama3:8b-instruct
 python run_agent.py
+```
+## Example Research Output
+
+![Autonomous Research Digest](result/digest.png)
